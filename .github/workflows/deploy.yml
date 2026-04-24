@@ -21,6 +21,7 @@ env:
   ECS_SERVICE: ai-ops-prototype-1-backend-service-u08xe7ka
   TASK_FAMILY: ai-ops-workflow-task
   CONTAINER_NAME: ai-ops-workflow-backend
+  PORT_MAPPING: ai-ops-prototype-1-backend-8000-tcp
 
 jobs:
   build-and-deploy:
@@ -102,6 +103,7 @@ jobs:
                 "essential": true,
                 "portMappings": [
                   {
+                    "name": "${PORT_MAPPING}",
                     "containerPort": 8000,
                     "protocol": "tcp"
                   }
