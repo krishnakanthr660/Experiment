@@ -1,211 +1,66 @@
-name: Build and Deploy to Production
+name: Deploy Backend to ECS
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
     paths:
       - 'Backend/**'
-      - 'Makefile'
       - '.github/workflows/**'
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 env:
   AWS_REGION: ap-south-1
-  STAGE: prod
   ECR_REPOSITORY: ai-ops-workflow-backend
-  ECS_CLUSTER: ai-ops-prototype-1
-  ECS_SERVICE: ai-ops-prototype-1-backend-service-u08xe7ka
-  TASK_FAMILY: ai-ops-workflow-task
+  ECS_SERVICE: ai-ops-workflow-experiment-service-xzyqqv20
+  ECS_CLUSTER: workflow-experiment
+  TASK_DEFINITION: task-definition.json
   CONTAINER_NAME: ai-ops-workflow-backend
-  PORT_MAPPING: ai-ops-prototype-1-backend-8000-tcp
 
 jobs:
-  build-and-deploy:
-    name: Build and Deploy to Production
+  deploy:
     runs-on: ubuntu-latest
-    environment: production
-    env:
-      NODE_VERSION: 20.19.0
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Configure AWS credentials
+      # 1. Configure AWS credentials
+      - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to Amazon ECR
-        id: login-ecr
+      # 2. Login to ECR
+      - name: Login to ECR
+        id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push Docker image to ECR
+      # 3. Build & Push Docker image
+      - name: Build and push image
         id: build-image
         run: |
-          # Get image details
-          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-          GIT_SHA=$(git rev-parse --short HEAD)
-          IMAGE_TAG="prod-${GIT_SHA}"
-          IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-
-          echo "Building image: ${IMAGE_URI}"
-
-          # Create ECR repository if it doesn't exist
-          aws ecr describe-repositories --repository-names ${ECR_REPOSITORY} --region ${AWS_REGION} || \
-          aws ecr create-repository \
-            --repository-name ${ECR_REPOSITORY} \
-            --image-scanning-configuration scanOnPush=true \
-            --region ${AWS_REGION}
-
-          # Build and push
+          IMAGE_URI=${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
           cd Backend
-          docker build -t ${IMAGE_URI} -t ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest .
-          docker push ${IMAGE_URI}
-          docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
+          echo "image=$IMAGE_URI" >> $GITHUB_OUTPUT
 
-          # Output for next steps
-          echo "image=${IMAGE_URI}" >> $GITHUB_OUTPUT
-          echo "IMAGE_URI=${IMAGE_URI}" >> $GITHUB_ENV
+      # 4. Render ECS task definition
+      - name: Render ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ env.TASK_DEFINITION }}
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
 
-      - name: Update task definition with new image
-        id: render-task-def
-        run: |
-          # Get AWS Account ID
-          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-
-          # Create task definition
-          cat > task-definition.json <<EOF
-          {
-            "family": "${TASK_FAMILY}",
-            "networkMode": "awsvpc",
-            "requiresCompatibilities": ["FARGATE"],
-            "cpu": "256",
-            "memory": "512",
-            "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
-            "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskRole",
-            "containerDefinitions": [
-              {
-                "name": "${CONTAINER_NAME}",
-                "image": "${IMAGE_URI}",
-                "essential": true,
-                "portMappings": [
-                  {
-                    "name": "${PORT_MAPPING}",
-                    "containerPort": 8000,
-                    "protocol": "tcp"
-                    "appProtocol": "http"
-                  }
-                ],
-                "environment": [
-                  {
-                    "name": "PORT",
-                    "value": "8000"
-                  },
-                  {
-                    "name": "NODE_ENV",
-                    "value": "production"
-                  }
-                ]
-              }
-            ]
-          }
-          EOF
-
-          echo "✅ Task definition created"
-
+      # 5. Deploy to ECS
       - name: Deploy to ECS
-        run: |
-          echo "Deploying to ECS cluster: ${ECS_CLUSTER}"
-
-          # Check if cluster exists
-          aws ecs describe-clusters --clusters ${ECS_CLUSTER} --region ${AWS_REGION} --query 'clusters[0].status' --output text 2>/dev/null | grep -q ACTIVE || \
-          (echo "Creating ECS cluster: ${ECS_CLUSTER}" && aws ecs create-cluster --cluster-name ${ECS_CLUSTER} --region ${AWS_REGION})
-
-          # Register new task definition
-          echo "Registering task definition: ${TASK_FAMILY}"
-          aws ecs register-task-definition \
-            --cli-input-json file://task-definition.json \
-            --region ${AWS_REGION} > /dev/null
-
-          # Check if service exists
-          SERVICE_EXISTS=$(aws ecs describe-services --cluster ${ECS_CLUSTER} --services ${ECS_SERVICE} --region ${AWS_REGION} --query 'services[0].status' --output text 2>/dev/null)
-
-          if [ "$SERVICE_EXISTS" = "ACTIVE" ]; then
-            echo "Updating existing service: ${ECS_SERVICE}"
-            aws ecs update-service \
-              --cluster ${ECS_CLUSTER} \
-              --service ${ECS_SERVICE} \
-              --task-definition ${TASK_FAMILY} \
-              --force-new-deployment \
-              --region ${AWS_REGION} > /dev/null
-          else
-            echo "⚠️ Service does not exist. Please create the service first:"
-            echo "Run: ./scripts/create-ecs-service.sh prod"
-            exit 1
-          fi
-
-          echo "✅ Deployment initiated"
-          echo "Waiting for service stability..."
-          aws ecs wait services-stable --cluster ${ECS_CLUSTER} --services ${ECS_SERVICE} --region ${AWS_REGION}
-          echo "✅ Service is stable"
-
-      - name: Get deployment info
-        id: deployment-info
-        run: |
-          echo "Deployment completed successfully!"
-          echo "Image: ${IMAGE_URI}"
-
-          # Get task ARN
-          TASK_ARN=$(aws ecs list-tasks \
-            --cluster ${ECS_CLUSTER} \
-            --service-name ${ECS_SERVICE} \
-            --region ${AWS_REGION} \
-            --query 'taskArns[0]' \
-            --output text 2>/dev/null || echo "")
-
-          if [ -n "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ]; then
-            echo "Task ARN: ${TASK_ARN}"
-          fi
-
-      - name: Add deployment summary
-        run: |
-          cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ## 🚀 Deployment Summary
-
-          **Environment**: Production
-          **Image**: \`${IMAGE_URI}\`
-          **Region**: \`${AWS_REGION}\`
-          **Cluster**: \`${ECS_CLUSTER}\`
-          **Service**: \`${ECS_SERVICE}\`
-
-          ### Deployment Status
-          ✅ Docker image built and pushed to ECR
-          ✅ ECS task definition updated
-          ✅ ECS service deployment initiated
-          ✅ Service is stable
-
-          ### Logs
-          View logs:
-          \`\`\`bash
-          aws logs tail /ecs/chatassist-ai-ops --follow --region ${AWS_REGION}
-          \`\`\`
-
-          ### Health Check
-          Check service status:
-          \`\`\`bash
-          make status STAGE=prod
-          \`\`\`
-          EOF
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
