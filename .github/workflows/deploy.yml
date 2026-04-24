@@ -106,6 +106,7 @@ jobs:
                     "name": "${PORT_MAPPING}",
                     "containerPort": 8000,
                     "protocol": "tcp"
+                    "appProtocol": "http"
                   }
                 ],
                 "environment": [
