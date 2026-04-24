@@ -17,8 +17,8 @@ env:
   AWS_REGION: ap-south-1
   STAGE: prod
   ECR_REPOSITORY: ai-ops-workflow-backend
-  ECS_CLUSTER: ai-ops-prototype-2
-  ECS_SERVICE: ai-ops-prototype-2-backend-proxy-service-p7hc7zgk
+  ECS_CLUSTER: ai-ops-prototype-1
+  ECS_SERVICE: ai-ops-prototype-1-backend-service-u08xe7ka
   TASK_FAMILY: ai-ops-workflow-task
   CONTAINER_NAME: ai-ops-workflow-backend
 
