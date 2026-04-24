@@ -13,7 +13,7 @@ env:
   ECR_REPOSITORY: ai-ops-workflow-backend
   ECS_SERVICE: ai-ops-workflow-experiment-service-xzyqqv20
   ECS_CLUSTER: workflow-experiment
-  TASK_DEFINITION: task-definition.json
+  TASK_DEFINITION: .github/task-definition.json
   CONTAINER_NAME: ai-ops-workflow-backend
 
 jobs:
